@@ -48,7 +48,7 @@ function __json_stringify_primitive(v, buf) {
     buffer_write(buf, buffer_u8, ord("\""));
     buffer_write(buf, buffer_text, "@i64@");
     buffer_write(buf, buffer_text, __int64_to_hex(v));
-    buffer_write(buf, buffer_text, "$i64@");
+    buffer_write(buf, buffer_text, "$i64$");
     buffer_write(buf, buffer_u8, ord("\""));
   }
   else if (is_real(v)) {
@@ -136,15 +136,17 @@ function __json_stringify_struct(st, buf, indent, prettify) {
  */
 function __int64_to_hex(v) {
   gml_pragma("forceinline");
-  // Convert signed int64 to 16-char lowercase hex (two's complement)
-  var u = v;
-  if (v < 0) u = v + 18446744073709551616; // 2^64
-
-  var hexChars = "0123456789abcdef";
-  var res = "";
-  repeat (16) {
-    res = string_char_at(hexChars, (u mod 16) + 1) + res;
-    u = floor(u / 16);
+  if (v == 0) return "0";
+    
+  var hex_digits = "0123456789abcdef";
+  var hex_str = "";
+  var temp = v;
+  
+  while (temp > 0) {
+    var remainder = temp mod 16;
+    hex_str = string_char_at(hex_digits, remainder + 1) + hex_str;
+    temp = temp div 16;
   }
-  return res;
+  
+  return hex_str;
 }

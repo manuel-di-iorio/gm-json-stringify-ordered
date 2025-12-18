@@ -33,12 +33,9 @@ how are you today?"
   NaN,
   infinity,
   -infinity,
-  int64(500),
+  int64("9223372036854775807"),
   ds_map_create()
 ];
-
-show_debug_message(json_stringify_ordered(data, true));
-show_debug_message(json_parse(json_stringify_ordered(data, true)));
 
 // Benchmark
 show_debug_message("=== Benchmark ===");
