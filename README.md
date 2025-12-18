@@ -65,15 +65,6 @@ Output:
 
 > Note: struct keys are sorted alphabetically (`active`, `inv`, `meta`, ...).
 
----
-
-## 🔧 Technical details
-
-- Serialization uses the `buffer_` functions to write directly to a buffer, reducing temporary allocations — this is significantly faster than concatenating strings.
-- Strings are escaped, numbers keep their numeric form, and `undefined`/`NaN` become `null`.
-
----
-
 ## 🤝 Contributing
 
 If you'd like to improve the script or suggest changes, open an issue or a pull request in the repository.
