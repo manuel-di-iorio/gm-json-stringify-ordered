@@ -4,6 +4,7 @@
 /// @param {bool} prettify Whether to include pretty formatting
 /// @return {string} A properly formatted and indented JSON string
 function json_stringify_ordered(value, prettify = false) {
+  gml_pragma("forceinline");
   var buf = buffer_create(1024, buffer_grow, 1);
   __json_stringify_buffer(value, buf, 0, prettify);
   var result = buffer_peek(buf, 0, buffer_text);
@@ -19,21 +20,35 @@ function json_stringify_ordered(value, prettify = false) {
 /// @param {bool} [pretty=true] Whether to include pretty formatting
 /// @return {undefined}
 function __json_stringify_buffer(v, buf, indent = 0, prettify) {
+  gml_pragma("forceinline");
   if (is_struct(v)) __json_stringify_struct(v, buf, indent, prettify);
   else if (is_array(v)) __json_stringify_array(v, buf, indent, prettify);
   else __json_stringify_primitive(v, buf);
 }
 
 /// @function __json_stringify_primitive(v, buf)
-/// @description Writes a primitive value to buffer in JSON format. Handles strings, numbers, booleans, and null values
+/// @description Writes a primitive value to buffer in JSON format. 
+///   Handles strings, handles, numbers (including int64), booleans, and special values (`undefined`, `NaN`, `Infinity`, etc.)
 /// @param {any} v The primitive value to convert
 /// @param {id.buffer} buf The buffer to write to
 /// @private
 function __json_stringify_primitive(v, buf) {
-  if (is_string(v)) {
+  gml_pragma("forceinline");
+  if (is_string(v) || is_handle(v)) {
     buffer_write(buf, buffer_u8, ord("\""));
-    var escaped = string_replace_all(v, "\"", "\\\"");
-    buffer_write(buf, buffer_text, escaped);
+    buffer_write(buf, buffer_text, string_replace_all(v, "\"", "\\\""));
+    buffer_write(buf, buffer_u8, ord("\""));
+  }
+  else if (is_infinity(v)) {
+    buffer_write(buf, buffer_u8, ord("\""));
+    buffer_write(buf, buffer_text, v > 0 ? "@@infinity$$" : "@@-infinity$$");
+    buffer_write(buf, buffer_u8, ord("\""));
+  }
+  else if (is_int64(v)) {
+    buffer_write(buf, buffer_u8, ord("\""));
+    buffer_write(buf, buffer_text, "@i64@");
+    buffer_write(buf, buffer_text, __int64_to_hex(v));
+    buffer_write(buf, buffer_text, "$i64@");
     buffer_write(buf, buffer_u8, ord("\""));
   }
   else if (is_real(v)) {
@@ -42,8 +57,12 @@ function __json_stringify_primitive(v, buf) {
   else if (is_bool(v)) {
     buffer_write(buf, buffer_text, v ? "true" : "false");
   }
-  else if (is_undefined(v) || is_nan(v)) {
+  else if (is_undefined(v)) {
     buffer_write(buf, buffer_text, "null");
+  } else if (is_nan(v)) {
+    buffer_write(buf, buffer_u8, ord("\""));
+    buffer_write(buf, buffer_text, "@@nan$$");
+    buffer_write(buf, buffer_u8, ord("\""));
   }
 }
 
@@ -55,6 +74,7 @@ function __json_stringify_primitive(v, buf) {
 /// @param {bool} prettify Whether to include pretty formatting
 /// @private
 function __json_stringify_array(arr, buf, indent, prettify) {
+  gml_pragma("forceinline");
   buffer_write(buf, buffer_u8, ord("["));
   if (prettify) buffer_write(buf, buffer_u8, 10); // newline
   
@@ -81,6 +101,7 @@ function __json_stringify_array(arr, buf, indent, prettify) {
 /// @param {bool} prettify Whether to include pretty formatting
 /// @private
 function __json_stringify_struct(st, buf, indent, prettify) {
+  gml_pragma("forceinline");
   var keys = variable_struct_get_names(st);
   array_sort(keys, true);
 
@@ -106,4 +127,24 @@ function __json_stringify_struct(st, buf, indent, prettify) {
 
   if (prettify) buffer_write(buf, buffer_text, pad_close);
   buffer_write(buf, buffer_u8, ord("}"));
+}
+
+/**
+ * @internal: Converts a signed int64 to a 16-character lowercase hexadecimal string.
+ * @param {int64} v The signed int64 value to convert
+ * @return {string} The hexadecimal representation of the int64 value
+ */
+function __int64_to_hex(v) {
+  gml_pragma("forceinline");
+  // Convert signed int64 to 16-char lowercase hex (two's complement)
+  var u = v;
+  if (v < 0) u = v + 18446744073709551616; // 2^64
+
+  var hexChars = "0123456789abcdef";
+  var res = "";
+  repeat (16) {
+    res = string_char_at(hexChars, (u mod 16) + 1) + res;
+    u = floor(u / 16);
+  }
+  return res;
 }

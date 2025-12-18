@@ -29,7 +29,12 @@ how are you today?"
       }
     ]
   },
-  [ "Test" ]
+  [ "Test" ],
+  NaN,
+  infinity,
+  -infinity,
+  int64(500),
+  ds_map_create()
 ];
 
 show_debug_message(json_stringify_ordered(data, true));
