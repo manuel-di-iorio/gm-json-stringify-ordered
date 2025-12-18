@@ -1,0 +1,13 @@
+{
+  "$GMScript":"v1",
+  "%Name":"json_stringify_ordered",
+  "isCompatibility":false,
+  "isDnD":false,
+  "name":"json_stringify_ordered",
+  "parent":{
+    "name":"json_stringify_ordered",
+    "path":"json_stringify_ordered.yyp",
+  },
+  "resourceType":"GMScript",
+  "resourceVersion":"2.0",
+}
