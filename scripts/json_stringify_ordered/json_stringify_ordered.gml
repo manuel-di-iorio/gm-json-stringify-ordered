@@ -1,207 +1,285 @@
-// v1.1.1
+// v1.2.0
+
+#macro __JSON_CH_QUOTE   34
+#macro __JSON_CH_COMMA   44
+#macro __JSON_CH_LBRACE  123
+#macro __JSON_CH_RBRACE  125
+#macro __JSON_CH_LBRACK  91
+#macro __JSON_CH_RBRACK  93
+#macro __JSON_CH_ZERO    48
 
 /// @function json_stringify_ordered(value, [prettify], [compact])
-/// @description Converts any value (struct, array, or primitive) to a formatted JSON string using buffers for better performance
+/// @description Converts any value (struct, array, or primitive) to a JSON string with sorted keys.
 /// @param {any} value The value to convert to JSON
 /// @param {bool} [prettify=false] Whether to include pretty formatting
-/// @param {real} [compact=0] Character threshold to keep arrays/objects on a single line. 0 = disabled.
-/// @return {string} A properly formatted and indented JSON string
+/// @param {real} [compact=0] Threshold (in UTF-8 BYTES) below which arrays/structs stay on a single line. 0 = disabled.
+/// @return {string} The JSON string
 function json_stringify_ordered(value, prettify = false, compact = 0) {
-  gml_pragma("forceinline");
-  var buf = buffer_create(1024, buffer_grow, 1);
-  __json_stringify_buffer(value, buf, 0, prettify, compact);
-  var result = buffer_peek(buf, 0, buffer_text);
-  buffer_delete(buf);
+  // Buffer reused across calls: no create/delete on every invocation,
+  // and no leak if serialization throws midway.
+  static buf = buffer_create(4096, buffer_grow, 1);
+  buffer_seek(buf, buffer_seek_start, 0);
+
+  __json_write_value(value, buf, 0, prettify, compact);
+
+  buffer_write(buf, buffer_u8, 0); // null terminator
+  var result = buffer_peek(buf, 0, buffer_string);
+
+  // Don't keep a huge buffer alive after a single large serialization
+  if (buffer_get_size(buf) > 4194304) buffer_resize(buf, 4096);
   return result;
 }
 
-/// @function __json_stringify_buffer(v, buf, indent, prettify, compact, is_spaced)
-/// @description Serializes a value into a buffer with JSON formatting.
-/// @param {any} v The value to serialize (struct, array, or primitive)
-/// @param {id.buffer} buf The target buffer where the serialized data will be written
-/// @param {real} [indent=0] The current indentation level for prettify-printing
-/// @param {bool} [prettify] Whether to include pretty formatting
-/// @param {real} [compact=0] Character threshold to keep small arrays/objects on a single line
-/// @param {bool} [is_spaced=false] Whether to add spaces around elements in compact mode
-/// @return {undefined}
-function __json_stringify_buffer(v, buf, indent = 0, prettify, compact = 0, is_spaced = false) {
-  gml_pragma("forceinline");
-  
-  // If compact is enabled, try to stringify the whole value on a single line if it's short
-  if (prettify && compact > 0 && !is_spaced && (is_struct(v) || is_array(v))) {
-     var test_buf = buffer_create(128, buffer_grow, 1);
-     __json_stringify_buffer(v, test_buf, 0, false, 0, true);
-     buffer_write(test_buf, buffer_u8, 0); // null terminator for buffer_peek
-     var s = buffer_peek(test_buf, 0, buffer_text);
-     buffer_delete(test_buf);
-     
-     if (string_length(s) < compact) {
-        buffer_write(buf, buffer_text, s);
-        return;
-     }
-  }
+/// @function __json_write_value(v, buf, indent, pretty, compact)
+/// @description Recursive writer (pretty or minified mode).
+/// @param {any} v The value to serialize
+/// @param {id.buffer} buf The target buffer
+/// @param {real} indent Current indentation level
+/// @param {bool} pretty Whether to use pretty formatting
+/// @param {real} compact Single-line threshold in bytes (only used when pretty)
+/// @private
+function __json_write_value(v, buf, indent, pretty, compact) {
+  if (is_struct(v)) {
+    if (pretty && compact > 0) {
+      // Speculative single-line attempt written straight into the main buffer,
+      // aborting as soon as the threshold is exceeded. On failure, rewind and write pretty.
+      var start = buffer_tell(buf);
+      if (__json_write_inline(v, buf, start + compact)) return;
+      buffer_seek(buf, buffer_seek_start, start);
+    }
 
-  if (is_struct(v)) __json_stringify_struct(v, buf, indent, prettify, compact, is_spaced);
-  else if (is_array(v)) __json_stringify_array(v, buf, indent, prettify, compact, is_spaced);
-  else __json_stringify_primitive(v, buf);
+    var keys = variable_struct_get_names(v);
+    array_sort(keys, true);
+    var kl = array_length(keys);
+
+    buffer_write(buf, buffer_u8, __JSON_CH_LBRACE);
+    if (pretty) {
+      var nl_in = __json_nl_pad(indent + 1);
+      for (var i = 0; i < kl; i++) {
+        var k = keys[i];
+        buffer_write(buf, buffer_text, nl_in);
+        buffer_write(buf, buffer_text, __json_key(k));
+        buffer_write(buf, buffer_text, ": ");
+        __json_write_value(v[$ k], buf, indent + 1, true, compact);
+        if (i < kl - 1) buffer_write(buf, buffer_u8, __JSON_CH_COMMA);
+      }
+      buffer_write(buf, buffer_text, __json_nl_pad(indent));
+    } else {
+      for (var i = 0; i < kl; i++) {
+        var k = keys[i];
+        buffer_write(buf, buffer_text, __json_key(k));
+        buffer_write(buf, buffer_u8, 58); // ':'
+        __json_write_value(v[$ k], buf, 0, false, 0);
+        if (i < kl - 1) buffer_write(buf, buffer_u8, __JSON_CH_COMMA);
+      }
+    }
+    buffer_write(buf, buffer_u8, __JSON_CH_RBRACE);
+  }
+  else if (is_array(v)) {
+    if (pretty && compact > 0) {
+      var start = buffer_tell(buf);
+      if (__json_write_inline(v, buf, start + compact)) return;
+      buffer_seek(buf, buffer_seek_start, start);
+    }
+
+    var al = array_length(v);
+
+    buffer_write(buf, buffer_u8, __JSON_CH_LBRACK);
+    if (pretty) {
+      var nl_in = __json_nl_pad(indent + 1);
+      for (var i = 0; i < al; i++) {
+        buffer_write(buf, buffer_text, nl_in);
+        __json_write_value(v[i], buf, indent + 1, true, compact);
+        if (i < al - 1) buffer_write(buf, buffer_u8, __JSON_CH_COMMA);
+      }
+      buffer_write(buf, buffer_text, __json_nl_pad(indent));
+    } else {
+      for (var i = 0; i < al; i++) {
+        __json_write_value(v[i], buf, 0, false, 0);
+        if (i < al - 1) buffer_write(buf, buffer_u8, __JSON_CH_COMMA);
+      }
+    }
+    buffer_write(buf, buffer_u8, __JSON_CH_RBRACK);
+  }
+  else {
+    __json_write_primitive(v, buf);
+  }
 }
 
-/// @function __json_stringify_primitive(v, buf)
-/// @description Writes a primitive value to buffer in JSON format. 
-///   Handles strings, handles, numbers (including int64), booleans, and special values (`undefined`, `NaN`, `Infinity`, etc.)
-/// @param {any} v The primitive value to convert
-/// @param {id.buffer} buf The buffer to write to
+/// @function __json_write_inline(v, buf, limit)
+/// @description Writes v on a single line ("{ "a": 1, "b": 2 }") directly into the buffer.
+///   Returns false as soon as the buffer position reaches `limit` (i.e. length >= threshold).
+/// @param {any} v The value to serialize
+/// @param {id.buffer} buf The target buffer
+/// @param {real} limit Absolute buffer position that must not be reached
+/// @return {bool} True if the value fit under the limit
 /// @private
-function __json_stringify_primitive(v, buf) {
-  gml_pragma("forceinline");
-  if (is_string(v) || is_handle(v)) {
-    buffer_write(buf, buffer_u8, ord("\""));
-    buffer_write(buf, buffer_text, __json_escape_string(string(v)));
-    buffer_write(buf, buffer_u8, ord("\""));
+function __json_write_inline(v, buf, limit) {
+  if (is_struct(v)) {
+    var n = variable_struct_names_count(v);
+    if (n == 0) {
+      buffer_write(buf, buffer_text, "{}");
+      return buffer_tell(buf) < limit;
+    }
+    // Each member takes at least 6 bytes: if it can't possibly fit, skip get_names + sort
+    if (buffer_tell(buf) + n * 6 >= limit) return false;
+
+    var keys = variable_struct_get_names(v);
+    array_sort(keys, true);
+
+    buffer_write(buf, buffer_text, "{ ");
+    for (var i = 0; i < n; i++) {
+      var k = keys[i];
+      buffer_write(buf, buffer_text, __json_key(k));
+      buffer_write(buf, buffer_text, ": ");
+      if (!__json_write_inline(v[$ k], buf, limit)) return false;
+      if (i < n - 1) buffer_write(buf, buffer_text, ", ");
+      if (buffer_tell(buf) >= limit) return false;
+    }
+    buffer_write(buf, buffer_text, " }");
+    return buffer_tell(buf) < limit;
   }
-  else if (is_infinity(v)) {
-    buffer_write(buf, buffer_u8, ord("\""));
-    buffer_write(buf, buffer_text, v > 0 ? "@@infinity$$" : "@@-infinity$$");
-    buffer_write(buf, buffer_u8, ord("\""));
+
+  if (is_array(v)) {
+    var al = array_length(v);
+    if (al == 0) {
+      buffer_write(buf, buffer_text, "[]");
+      return buffer_tell(buf) < limit;
+    }
+    // Each element takes at least 2 bytes (value + separator)
+    if (buffer_tell(buf) + al * 2 >= limit) return false;
+
+    buffer_write(buf, buffer_text, "[ ");
+    for (var i = 0; i < al; i++) {
+      if (!__json_write_inline(v[i], buf, limit)) return false;
+      if (i < al - 1) buffer_write(buf, buffer_text, ", ");
+      if (buffer_tell(buf) >= limit) return false;
+    }
+    buffer_write(buf, buffer_text, " ]");
+    return buffer_tell(buf) < limit;
   }
-  else if (is_int64(v)) {
-    buffer_write(buf, buffer_u8, ord("\""));
-    buffer_write(buf, buffer_text, "@i64@");
-    buffer_write(buf, buffer_text, __int64_to_hex(v));
-    buffer_write(buf, buffer_text, "$i64$");
-    buffer_write(buf, buffer_u8, ord("\""));
+
+  // Long strings: fail before escaping/writing them
+  if (is_string(v) && buffer_tell(buf) + string_byte_length(v) >= limit) return false;
+
+  __json_write_primitive(v, buf);
+  return buffer_tell(buf) < limit;
+}
+
+/// @function __json_write_primitive(v, buf)
+/// @description Writes a primitive value to the buffer in JSON format.
+///   Handles strings, handles, numbers (including int64), booleans and special values
+///   (`undefined`, `NaN`, `Infinity`). Unsupported types are written as null.
+/// @param {any} v The primitive value
+/// @param {id.buffer} buf The target buffer
+/// @private
+function __json_write_primitive(v, buf) {
+  if (is_string(v)) {
+    buffer_write(buf, buffer_u8, __JSON_CH_QUOTE);
+    buffer_write(buf, buffer_text, __json_escape_string(v));
+    buffer_write(buf, buffer_u8, __JSON_CH_QUOTE);
   }
-  else if (is_real(v)) {
-    buffer_write(buf, buffer_text, string(v));
+  else if (is_real(v) || is_int64(v)) {
+    if ((v - v) == 0) { // finite number (NaN and infinity both give NaN here)
+      if (is_int64(v)) {
+        buffer_write(buf, buffer_text, "\"@i64@");
+        __json_write_int64_hex(v, buf);
+        buffer_write(buf, buffer_text, "$i64$\"");
+      } else {
+        buffer_write(buf, buffer_text, string(v));
+      }
+    }
+    else if (is_nan(v)) {
+      buffer_write(buf, buffer_text, "\"@@nan$$\"");
+    }
+    else {
+      buffer_write(buf, buffer_text, (v > 0) ? "\"@@infinity$$\"" : "\"@@-infinity$$\"");
+    }
   }
   else if (is_bool(v)) {
     buffer_write(buf, buffer_text, v ? "true" : "false");
   }
   else if (is_undefined(v)) {
     buffer_write(buf, buffer_text, "null");
-  } else if (is_nan(v)) {
-    buffer_write(buf, buffer_u8, ord("\""));
-    buffer_write(buf, buffer_text, "@@nan$$");
-    buffer_write(buf, buffer_u8, ord("\""));
+  }
+  else if (is_handle(v)) {
+    buffer_write(buf, buffer_u8, __JSON_CH_QUOTE);
+    buffer_write(buf, buffer_text, __json_escape_string(string(v)));
+    buffer_write(buf, buffer_u8, __JSON_CH_QUOTE);
+  }
+  else {
+    buffer_write(buf, buffer_text, "null"); // unhandled types: still produce valid JSON
   }
 }
 
-/// @function __json_stringify_array(arr, buf, indent, prettify, compact, is_spaced)
-/// @description Writes an array to buffer in JSON format with proper indentation
-/// @param {array} arr The array to convert
-/// @param {id.buffer} buf The buffer to write to
-/// @param {real} indent The current indentation level
-/// @param {bool} prettify Whether to include pretty formatting
-/// @param {real} compact Whether to keep small arrays/objects on a single line
-/// @param {bool} is_spaced Whether to add spaces around elements in compact mode
+/// @function __json_nl_pad(n)
+/// @description Returns "\n" followed by 2*n spaces, cached (no string_repeat per container).
+/// @param {real} n The indentation level
+/// @return {string}
 /// @private
-function __json_stringify_array(arr, buf, indent, prettify, compact, is_spaced = false) {
-  gml_pragma("forceinline");
-  buffer_write(buf, buffer_u8, ord("["));
-  
-  var al = array_length(arr);
-  if (is_spaced && !prettify && al > 0) buffer_write(buf, buffer_u8, ord(" "));
-  if (prettify) buffer_write(buf, buffer_u8, 10); // newline
-  
-  var pad = string_repeat("  ", indent + 1);
-  var pad_close = string_repeat("  ", indent);
- 
-  for (var i = 0; i < al; i++) {
-      if (prettify) buffer_write(buf, buffer_text, pad);
-      __json_stringify_buffer(arr[i], buf, indent + 1, prettify, compact, is_spaced);
-
-      if (i < al - 1) {
-          buffer_write(buf, buffer_u8, ord(","));
-          if (is_spaced && !prettify) buffer_write(buf, buffer_u8, ord(" "));
-      }
-      if (prettify) buffer_write(buf, buffer_u8, 10); // newline
+function __json_nl_pad(n) {
+  static pads = ["\n"];
+  var l = array_length(pads);
+  while (l <= n) {
+    array_push(pads, pads[l - 1] + "  ");
+    l++;
   }
-
-  if (prettify) buffer_write(buf, buffer_text, pad_close);
-  if (is_spaced && !prettify && al > 0) buffer_write(buf, buffer_u8, ord(" "));
-  buffer_write(buf, buffer_u8, ord("]"));
+  return pads[n];
 }
 
-/// @function __json_stringify_struct(st, buf, indent, prettify, compact, is_spaced)
-/// @description Writes a struct to buffer in JSON format with proper indentation. Keys are sorted alphabetically
-/// @param {struct} st The struct to convert
-/// @param {id.buffer} buf The buffer to write to
-/// @param {real} indent The current indentation level
-/// @param {bool} prettify Whether to include pretty formatting
-/// @param {real} compact Whether to keep small arrays/objects on a single line
-/// @param {bool} is_spaced Whether to add spaces around elements in compact mode
+/// @function __json_key(k)
+/// @description Returns the key already escaped and wrapped in quotes. Keys repeat a lot
+///   (same fields across many objects), so the result is cached.
+/// @param {string} k The struct key
+/// @return {string}
 /// @private
-function __json_stringify_struct(st, buf, indent, prettify, compact, is_spaced = false) {
-  gml_pragma("forceinline");
-  var keys = variable_struct_get_names(st);
-  array_sort(keys, true);
-
-  buffer_write(buf, buffer_u8, ord("{"));
-  
-  var kl = array_length(keys);
-  if (is_spaced && !prettify && kl > 0) buffer_write(buf, buffer_u8, ord(" "));
-  if (prettify) buffer_write(buf, buffer_u8, 10); // newline
-  
-  var pad = string_repeat("  ", indent + 1);
-  var pad_close = string_repeat("  ", indent);
-
-  for (var i = 0; i < kl; i++) {
-      var k = keys[i];
-      
-      if (prettify) buffer_write(buf, buffer_text, pad);
-      buffer_write(buf, buffer_u8, ord("\""));
-      buffer_write(buf, buffer_text, __json_escape_string(k));
-      buffer_write(buf, buffer_text, (prettify || is_spaced) ? "\": " : "\":");
-      
-      __json_stringify_buffer(st[$ k], buf, indent + 1, prettify, compact, is_spaced);
-
-      if (i < kl - 1) {
-          buffer_write(buf, buffer_u8, ord(","));
-          if (is_spaced && !prettify) buffer_write(buf, buffer_u8, ord(" "));
-      }
-      if (prettify) buffer_write(buf, buffer_u8, 10); // newline
+function __json_key(k) {
+  static cache = {};
+  static count = 0;
+  var q = cache[$ k];
+  if (q != undefined) return q;
+  q = "\"" + __json_escape_string(k) + "\"";
+  if (count < 4096) { // cap so dynamic keys can't make the cache grow unbounded
+    cache[$ k] = q;
+    count++;
   }
-
-  if (prettify) buffer_write(buf, buffer_text, pad_close);
-  if (is_spaced && !prettify && kl > 0) buffer_write(buf, buffer_u8, ord(" "));
-  buffer_write(buf, buffer_u8, ord("}"));
+  return q;
 }
 
-/**
- * @internal: Escapes a string for JSON inclusion
- * @param {string} str The string to escape
- * @return {string} The escaped string
- */
+/// @function __json_escape_string(str)
+/// @description Escapes a string for JSON inclusion. Only calls string_replace_all
+///   for characters that are actually present.
+/// @param {string} str The string to escape
+/// @return {string} The escaped string
+/// @private
 function __json_escape_string(str) {
-  gml_pragma("forceinline");
-  var s = string_replace_all(str, "\\", "\\\\");
-  s = string_replace_all(s, "\"", "\\\"");
-  s = string_replace_all(s, "\n", "\\n");
-  s = string_replace_all(s, "\r", "\\r");
-  s = string_replace_all(s, "\t", "\\t");
-  s = string_replace_all(s, "\b", "\\b");
-  s = string_replace_all(s, "\f", "\\f");
+  var s = str;
+  if (string_pos("\\", s)) s = string_replace_all(s, "\\", "\\\\"); // must stay first
+  if (string_pos("\"", s)) s = string_replace_all(s, "\"", "\\\"");
+  if (string_pos("\n", s)) s = string_replace_all(s, "\n", "\\n");
+  if (string_pos("\r", s)) s = string_replace_all(s, "\r", "\\r");
+  if (string_pos("\t", s)) s = string_replace_all(s, "\t", "\\t");
+  if (string_pos("\b", s)) s = string_replace_all(s, "\b", "\\b");
+  if (string_pos("\f", s)) s = string_replace_all(s, "\f", "\\f");
   return s;
 }
 
-/**
- * @internal: Converts a signed int64 to a 16-character lowercase hexadecimal string.
- * @param {int64} v The signed int64 value to convert
- * @return {string} The hexadecimal representation of the int64 value
- */
-function __int64_to_hex(v) {
-  gml_pragma("forceinline");
-  if (v == 0) return "0";
-    
-  var hex_digits = "0123456789abcdef";
-  var hex_str = "";
-  var temp = v;
-  
-  while (temp > 0) {
-    var remainder = temp mod 16;
-    hex_str = string_char_at(hex_digits, remainder + 1) + hex_str;
-    temp = temp div 16;
+/// @function __json_write_int64_hex(v, buf)
+/// @description Writes an int64 as lowercase hex directly into the buffer (no temporary strings).
+///   Values >= 0: no leading zeros. Negative values: 16-digit two's complement.
+/// @param {int64} v The value to write
+/// @param {id.buffer} buf The target buffer
+/// @private
+function __json_write_int64_hex(v, buf) {
+  static codes = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102]; // '0'-'9', 'a'-'f'
+  if (v == 0) {
+    buffer_write(buf, buffer_u8, __JSON_CH_ZERO);
+    return;
   }
-  
-  return hex_str;
+  var started = false;
+  for (var i = 60; i >= 0; i -= 4) {
+    var d = (v >> i) & 15;
+    if (d != 0) started = true;
+    if (started) buffer_write(buf, buffer_u8, codes[d]);
+  }
 }

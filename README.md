@@ -4,7 +4,7 @@
 
 ---
 
-## 🚀 Features
+## Features
 
 - Converts nested structs, arrays and primitives into formatted JSON (2-space indentation).
 - Sorts struct keys alphabetically for deterministic output.
@@ -13,13 +13,13 @@
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 - GameMaker with support for structs (v2.3+)
 
 ---
 
-## 💡 Usage
+## Usage
 
 ```gml
 // json_stringify_ordered(value, prettify = false, compact = 0)
@@ -66,7 +66,7 @@ Output:
 }
 ```
 
-### 📦 Compact Formatting Example
+### Compact Formatting Example
 
 When using `prettify = true`, you can specify a `compact` threshold to keep short lists and objects on a single line:
 
@@ -93,12 +93,12 @@ Output:
 
 > Note: struct keys are sorted alphabetically (`active`, `pos`, `tags`).
 
-## 🤝 Contributing
+## Contributing
 
 If you'd like to improve the script or suggest changes, open an issue or a pull request in the repository.
 
 ---
 
-## 📝 License
+## License
 
 MIT
